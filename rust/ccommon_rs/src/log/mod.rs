@@ -13,19 +13,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Glue between rust's standard `log` crate and ccommon's cc_log logger.
-//!
-//! This library allows rust embedded into projects using ccommon to use
-//! the same logger provided by `cc_log.h`
-//!
-//! # Safety
-//!
-//! This library is AGGRESSIVELY NON-THREADSAFE...for SPEED.
-//!
-//! If you are using the standard rust macros for logging, you must
-//! ensure that you are running your rust code from a single thread or
-//! _bad things may happen_.
-
 #![allow(dead_code)]
 
 use cc_binding as bind;

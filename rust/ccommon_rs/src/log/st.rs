@@ -260,4 +260,3 @@ pub unsafe extern "C" fn log_st_unset_rs() -> bool {
 pub unsafe extern "C" fn log_st_flush_rs() {
     LOGGER.flush()
 }
-

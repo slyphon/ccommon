@@ -25,16 +25,16 @@ extern "C" {
 
 /* NOTE: for documentation see ccommon/rust/ccommon_rs/src/log.rs */
 
-typedef enum log_rs_level {
+typedef enum log_level_rs {
     LOG_LEVEL_ERROR = 1,
     LOG_LEVEL_WARN,
     LOG_LEVEL_INFO,
     LOG_LEVEL_DEBUG,
     LOG_LEVEL_TRACE,
-} log_rs_level_e;
+} log_level_rs_e;
 
 
-typedef enum log_rs_status {
+typedef enum log_status_rs {
     /* Good work! */
     LOG_STATUS_OK = 0,
     /* An action that requires log_rs_is_setup() to be true, but it isn't
@@ -47,25 +47,25 @@ typedef enum log_rs_status {
     LOG_STATUS_ALREADY_SET_ERROR,
     /* Data was expected to be valid UTF8 but was not */
     LOG_STATUS_INVALID_UTF8,
-} log_rs_status_e;
+} log_status_rs_e;
 
-log_rs_status_e log_rs_setup(void);
+log_status_rs_e log_st_setup_rs(void);
 /* Set this logger as the one Rust will use for all log output.
  * Note: the rust side will make its own shallow copy of the logger struct
- * (not just the pointer), and will free that when log_rs_unset() is called.
+ * (not just the pointer), and will free that when log_st_unset_rs() is called.
  */
-log_rs_status_e log_rs_set(struct logger *log, log_rs_level_e level);
+log_status_rs_e log_st_set_rs(struct logger *log, log_level_rs_e level);
 
-bool log_rs_is_setup(void);
-log_rs_status_e log_rs_log(struct bstring *msg, log_rs_level_e level);
+bool log_st_is_setup_rs(void);
+log_status_rs_e log_st_log_rs(struct bstring *msg, log_level_rs_e level);
 
-void log_rs_set_max_level(log_rs_level_e level);
+void log_st_set_max_level_rs(log_level_rs_e level);
 
 /* Tell the rust side to stop logging to its logger and free resources.
  * Returns true if an action was taken.
  */
-bool log_rs_unset(void);
-void log_rs_flush(void);
+bool log_st_unset_rs(void);
+void log_st_flush_rs(void);
 
 #ifdef __cplusplus
 }

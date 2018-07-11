@@ -289,17 +289,17 @@ START_TEST(test_rust_logger_integration)
     char *tmpname = NULL;
     struct logger *log = NULL;
     struct bstring *result = NULL;
-    ck_assert(log_rs_setup() == LOG_STATUS_OK);
+    ck_assert(log_st_setup_rs() == LOG_STATUS_OK);
 
     tmpname = tmpname_create();
     log = log_create(tmpname, 0);
 
-    ck_assert(log_rs_set(log, LOG_LEVEL_TRACE) == LOG_STATUS_OK);
+    ck_assert(log_st_set_rs(log, LOG_LEVEL_TRACE) == LOG_STATUS_OK);
 
-    ck_assert_msg(log_rs_is_setup(), "log was not set up");
+    ck_assert_msg(log_st_is_setup_rs(), "log was not set up");
 
     bstring_set_raw(&msg, LOGSTR);
-    ck_assert(log_rs_log(&msg, LOG_LEVEL_ERROR) == LOG_STATUS_OK);
+    ck_assert(log_st_log_rs(&msg, LOG_LEVEL_ERROR) == LOG_STATUS_OK);
 
     result = read_whole_file(tmpname);
     ck_assert_ptr_nonnull(result);
@@ -339,7 +339,10 @@ log_suite(void)
     tcase_add_test(tc_log, test_write_metrics_file_nobuf);
     tcase_add_test(tc_log, test_write_metrics_stderr_nobuf);
     tcase_add_test(tc_log, test_write_skip_metrics);
+
+#ifdef HAVE_RUST
     tcase_add_test(tc_log, test_rust_logger_integration);
+#endif
 
     return s;
 }
