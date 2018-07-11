@@ -50,13 +50,21 @@ typedef enum log_rs_status {
 } log_rs_status_e;
 
 log_rs_status_e log_rs_setup(void);
+/* Set this logger as the one Rust will use for all log output.
+ * Note: the rust side will make its own shallow copy of the logger struct
+ * (not just the pointer), and will free that when log_rs_unset() is called.
+ */
 log_rs_status_e log_rs_set(struct logger *log, log_rs_level_e level);
+
 bool log_rs_is_setup(void);
 log_rs_status_e log_rs_log(struct bstring *msg, log_rs_level_e level);
 
 void log_rs_set_max_level(log_rs_level_e level);
 
-struct logger *log_rs_unset(void);
+/* Tell the rust side to stop logging to its logger and free resources.
+ * Returns true if an action was taken.
+ */
+bool log_rs_unset(void);
 void log_rs_flush(void);
 
 #ifdef __cplusplus

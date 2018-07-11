@@ -6,7 +6,7 @@ extern crate log as rs_log;
 extern crate rusty_fork;
 extern crate tempfile;
 
-use ccommon::log as cc_log;
+use ccommon::log::st as log_st;
 use ccommon::log::{Level, LoggerStatus};
 use ccommon::Result;
 use std::ffi::CString;
@@ -36,20 +36,20 @@ fn basic_roundtrip() {
         let pb = tf.path().to_path_buf();
         let path = pb.to_str().unwrap();
 
-        let logger: *mut bind::logger = unsafe {
+        let mut logger: *mut bind::logger = unsafe {
             bind::log_create(CString::new(path)?.into_raw(), 0)
         };
         assert!(!logger.is_null());
 
-        assert_eq!(cc_log::log_rs_setup(), LoggerStatus::OK);
-        assert_eq!(cc_log::log_rs_set(logger, Level::Debug), LoggerStatus::OK);
+        assert_eq!(log_st::log_st_setup_rs(), LoggerStatus::OK);
+        assert_eq!(unsafe{log_st::log_st_set_rs(logger, Level::Debug)}, LoggerStatus::OK);
         rs_log::set_max_level(LevelFilter::Trace);
 
         let logged_msg = "this message should be sent to the cc logger";
 
         error!("msg: {}", logged_msg);
 
-        unsafe { cc_log::log_rs_flush() };
+        unsafe { log_st::log_st_flush_rs() };
 
         let mut buf = Vec::new();
         {
@@ -60,10 +60,10 @@ fn basic_roundtrip() {
         let s = str::from_utf8(&buf[..])?;
         assert!(s.rfind(logged_msg).is_some());
 
-        let mut ptr = unsafe { cc_log::log_rs_unset() };
-        assert_eq!(ptr, logger);
+        let b = unsafe { log_st::log_st_unset_rs() };
+        assert!(b);
 
-        unsafe { bind::log_destroy(&mut ptr) };
+        unsafe { bind::log_destroy(&mut logger) };
         unsafe { bind::log_metrics_destroy(&mut stats) }
 
         Ok(())
