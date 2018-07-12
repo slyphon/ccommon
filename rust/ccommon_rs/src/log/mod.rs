@@ -121,7 +121,7 @@ impl Log for Logger {
         if self.enabled(record.metadata()) {
             if let Some(clog) = self.clogger() {
                 let msg = format!(
-                    "{} {:<5} [{}] {}\n",
+                    "{} {:<5} [{}] {}\n", /* TODO: microseconds */
                     time::strftime("%Y-%m-%d %H:%M:%S", &time::now()).unwrap(),
                     record.level().to_string(),
                     record.module_path().unwrap_or_default(),
@@ -195,5 +195,3 @@ impl From<usize> for ModuleState {
         }
     }
 }
-
-

@@ -38,21 +38,34 @@ use std::result::Result;
 use std::sync::atomic::{ATOMIC_USIZE_INIT, AtomicUsize, Ordering};
 use super::{CLogger, Logger, LoggerStatus, LoggingError, ModuleState, NopLogger, RawWrapper};
 
-static mut LOGGER: &'static RawWrapper = &NopLogger;
+static mut LOGGER: &'static Option<Logger> = &None;
 
 struct ShimLog;
 
 impl Log for ShimLog {
     fn enabled(&self, metadata: &Metadata) -> bool {
-        unsafe { LOGGER.enabled(metadata) }
+        unsafe {
+            match LOGGER {
+                Some(log) => log.enabled(metadata),
+                None => false,
+            }
+        }
     }
 
     fn log(&self, record: &Record) {
-        unsafe { LOGGER.log(record) }
+        unsafe {
+            if let Some(log) = LOGGER {
+                log.log(record)
+            }
+        }
     }
 
     fn flush(&self) {
-        unsafe { LOGGER.flush() }
+        unsafe {
+            if let Some(log) = LOGGER {
+                log.flush()
+            }
+        }
     }
 }
 
@@ -62,7 +75,6 @@ fn get_state() -> ModuleState {
     let u = STATE.fetch_add(0, Ordering::SeqCst);
     ModuleState::from(u)
 }
-
 
 /// Establishes this module as the rust `log` crate's singleton logger. We first install a
 /// no-op logger, and then replace it with an actual logging instance that has an output.
@@ -179,7 +191,7 @@ pub unsafe extern "C" fn log_st_set_rs(logger: *mut bind::logger, level: Level) 
 
     if LOGGER.is_none() {
         let clogger = CLogger::from_raw(logger);
-        LOGGER = Box::leak(Box::new(Logger::new(clogger, level.to_level_filter())));
+        LOGGER = Box::leak(Box::new(Some(Logger::new(clogger, level.to_level_filter()))));
 
         LoggerStatus::OK
     } else {
@@ -195,7 +207,7 @@ pub unsafe extern "C" fn log_st_is_setup_rs() -> bool {
         return false;
     }
 
-    LOGGER.clogger().is_some()
+    LOGGER.is_some()
 }
 
 
@@ -218,7 +230,7 @@ pub unsafe extern "C" fn log_st_log_rs(msg: *const BString, level: Level) -> Log
     match bsr.to_str() {
         Ok(s) => {
             log!(level, "{}", s);
-            LOGGER.flush();
+            LOGGER.map(|g| g.flush());
         },
         Err(err) => {
             eprintln!("error in log_rs_log: {:?}", err);
@@ -240,12 +252,14 @@ pub extern "C" fn log_st_set_max_level_rs(level: Level) {
 /// the instance. If there is no current logger instance, returns NULL.
 #[no_mangle]
 pub unsafe extern "C" fn log_st_unset_rs() -> bool {
-    if LOGGER.is_none() {
+    if let Some(g) = LOGGER {
+        g.flush();
+        drop(*g);
+        LOGGER = &None;
+        return true;
+    } else {
         return false
     }
-
-    LOGGER = &NopLogger;
-    true
 }
 
 
@@ -258,5 +272,7 @@ pub unsafe extern "C" fn log_st_unset_rs() -> bool {
 /// invalid the behavior is undefined.
 #[no_mangle]
 pub unsafe extern "C" fn log_st_flush_rs() {
-    LOGGER.flush()
+    if let Some(g) = *LOGGER {
+        g.flush();
+    }
 }

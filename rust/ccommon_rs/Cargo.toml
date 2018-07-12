@@ -10,6 +10,7 @@ crate-type = ["lib", "dylib", "rlib", "staticlib"]
 [dependencies]
 
 cc_binding = { path = "../cc_binding" }
+crossbeam = "~0.3.2"
 log = "~0.4"
 libc = "~0.2"
 failure = "~0.1"

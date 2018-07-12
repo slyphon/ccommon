@@ -1,16 +1,17 @@
 extern crate cc_binding;
-#[macro_use]
-extern crate log as rslog;
-extern crate time;
-extern crate lazy_static;
+extern crate crossbeam;
 extern crate failure;
 #[macro_use]
 extern crate failure_derive;
+extern crate lazy_static;
+#[macro_use]
+extern crate log as rslog;
 extern crate tempfile;
+extern crate time;
+
+use std::result;
 
 pub mod bstring;
 pub mod log;
-
-use std::result;
 
 pub type Result<T> = result::Result<T, failure::Error>;
