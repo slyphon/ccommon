@@ -11,6 +11,10 @@ extern crate time;
 extern crate thread_local;
 extern crate thread_id;
 
+#[cfg(test)]
+#[macro_use]
+extern crate rusty_fork;
+
 use std::result;
 
 pub mod bstring;

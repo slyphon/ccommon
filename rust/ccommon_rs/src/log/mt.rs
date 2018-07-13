@@ -18,8 +18,6 @@ use crossbeam::sync::ArcCell;
 use log::*;
 use rslog;
 use std::cell::RefCell;
-use std::error;
-use std::io;
 use std::ffi::CString;
 use std::path::PathBuf;
 use std::ptr;
@@ -84,6 +82,7 @@ impl LogConfig {
     }
 }
 
+
 struct PerThreadLog {
     clogger: CLogger,
     thread_name: String,
@@ -111,9 +110,6 @@ impl PerThreadLog {
 unsafe impl Sync for PerThreadLog {}
 unsafe impl Send for PerThreadLog {}
 
-fn handle_error<E: error::Error + ?Sized>(e: &E) {
-    let _ = writeln!(io::stderr(), "log_mt_rs: {}", e);
-}
 
 impl Log for PerThreadLog {
     fn enabled(&self, _: &Metadata) -> bool {
@@ -191,17 +187,8 @@ pub struct Handle {
     shim: Arc<ArcCell<Shim>>
 }
 
-
-#[no_mangle]
-pub unsafe extern "C" fn log_mt_setup(cfg: *mut bind::log_mt_config_rs) -> *mut Handle {
-    let config = match LogConfig::from_raw(cfg) {
-        Ok(c) => c,
-        Err(err) => {
-            eprintln!("log_mt_setup error {:?}", err);
-            return ptr::null_mut();
-        }
-    };
-
+#[doc(hidden)] // visible for testing
+pub fn log_mt_setup_safe(config: LogConfig) -> *mut Handle {
     rslog::set_max_level(config.level.to_level_filter());
     let shim = Shim::new(config);
     let logger = Logger(Arc::new(ArcCell::new(Arc::new(shim))));
@@ -214,4 +201,83 @@ pub unsafe extern "C" fn log_mt_setup(cfg: *mut bind::log_mt_config_rs) -> *mut 
             return ptr::null_mut();
         }
     }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn log_mt_setup(cfg: *mut bind::log_mt_config_rs) -> *mut Handle {
+    let config = match LogConfig::from_raw(cfg) {
+        Ok(c) => c,
+        Err(err) => {
+            eprintln!("log_mt_setup error {:?}", err);
+            return ptr::null_mut();
+        }
+    };
+
+    log_mt_setup_safe(config)
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use tempfile;
+    use std::thread;
+    use std::fs;
+
+    // this is necessary until https://github.com/rust-lang/rust/issues/48854
+    // lands in stable
+    fn assert_result<F, E>(f: F)
+        where F: FnOnce() -> Result<E>
+    {
+        match f() {
+            Ok(_) => (),
+            Err(e) => panic!(e)
+        }
+    }
+
+    fn basic_mt_roundtrip() {
+        assert_result(|| {
+            let mut stats = LogMetrics::new();
+            unsafe { bind::log_setup(stats.as_mut_ptr()) };
+            let tmpdir = tempfile::tempdir()?;
+
+            let cfg = LogConfig {
+                path: tmpdir.path().to_path_buf().to_str().unwrap().to_owned(),
+                file_basename: String::from("testmt"),
+                buf_size: 0,
+                level: Level::Trace,
+            };
+
+            let handle = log_mt_setup_safe(cfg);
+            assert!(!handle.is_null());
+
+            let t1 = thread::spawn(move || {
+                error!("thread 1 error");
+            });
+
+            let t2 = thread::spawn(move || {
+                warn!("thread 2 error");
+            });
+
+
+            t1.join().unwrap();
+            t2.join().unwrap();
+
+            for entry in fs::read_dir(tmpdir.path())? {
+                if let Ok(entry) = entry {
+                    if let Ok(metadata) = entry.metadata() {
+                        eprintln!("{:?}: {:#?}", entry.path(), metadata)
+                    }
+                }
+            }
+
+            Ok(())
+        })
+    }
+
+    // runs this test with process isolation
+    rusty_fork_test! {
+        #[test]
+        fn test_basic_mt_roundtrip() { basic_mt_roundtrip(); }
+    }
+
 }

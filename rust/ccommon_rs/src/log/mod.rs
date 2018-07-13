@@ -62,7 +62,8 @@ impl From<SetLoggerError> for LoggingError {
     }
 }
 
-struct CLogger(*mut bind::logger);
+#[doc(hidden)]
+pub struct CLogger(*mut bind::logger);
 
 impl CLogger {
     pub unsafe fn from_raw(p: *mut bind::logger) -> CLogger {
@@ -81,7 +82,7 @@ impl CLogger {
 
     pub unsafe fn open(path: &str, buf_size: u32) -> super::Result<CLogger> {
         let p: *mut bind::logger =
-            bind::log_create(CString::new(path)?.as_ptr() as *mut i8, buf_size);
+            bind::log_create(CString::new(path)?.into_raw(), buf_size);
 
         if p.is_null() {
             return Err(LoggingError::CreationError {path: path.to_owned(), buf_size}.into())
@@ -89,6 +90,8 @@ impl CLogger {
 
         Ok(CLogger(p))
     }
+
+    pub fn as_mut_ptr(&mut self) -> *mut bind::logger { self.0 }
 }
 
 impl Drop for CLogger {
@@ -239,5 +242,24 @@ impl From<usize> for ModuleState {
             3 => ModuleState::FAILED,
             _ => unreachable!()
         }
+    }
+}
+
+#[doc(hidden)] // visible for integration testing
+pub struct LogMetrics(*mut bind::log_metrics_st);
+
+impl LogMetrics {
+    pub fn new() -> Self {
+        let ptr = unsafe { bind::log_metrics_create() };
+        assert!(!ptr.is_null());
+        LogMetrics(ptr)
+    }
+
+    pub fn as_mut_ptr(&mut self) -> *mut bind::log_metrics_st { self.0 }
+}
+
+impl Drop for LogMetrics {
+    fn drop(&mut self) {
+        unsafe { bind::log_metrics_destroy(&mut self.0) }
     }
 }
