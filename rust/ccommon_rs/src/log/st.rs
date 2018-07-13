@@ -36,7 +36,7 @@ use rslog::{Log, Metadata, Record};
 pub use rslog::Level;
 use std::result::Result;
 use std::sync::atomic::{ATOMIC_USIZE_INIT, AtomicUsize, Ordering};
-use super::{CLogger, Logger, LoggerStatus, LoggingError, ModuleState, NopLogger, RawWrapper};
+use super::{CLogger, Logger, LoggerStatus, LoggingError, ModuleState};
 
 static mut LOGGER: &'static Option<Logger> = &None;
 
@@ -141,13 +141,9 @@ pub(crate) fn try_init_logger() -> Result<(), LoggingError> {
 pub extern "C" fn log_st_setup_rs() -> LoggerStatus {
     match try_init_logger() {
         Ok(_) => LoggerStatus::OK,
-        Err(LoggingError::LoggingAlreadySetUp) => {
-            eprintln!("cc_log logging already set up");
-            LoggerStatus::OK
-        }
-        Err(LoggingError::LoggerRegistrationFailure) => {
-            eprintln!("Error setting up cc_log! {}", LoggingError::LoggerRegistrationFailure);
-            LoggerStatus::RegistrationFailure
+        Err(err) => {
+            eprintln!("error in try_init_logger: {}", err);
+            LoggerStatus::from(err)
         }
     }
 }
@@ -230,7 +226,9 @@ pub unsafe extern "C" fn log_st_log_rs(msg: *const BString, level: Level) -> Log
     match bsr.to_str() {
         Ok(s) => {
             log!(level, "{}", s);
-            LOGGER.map(|g| g.flush());
+            if let Some(log) = LOGGER {
+                log.flush();
+            }
         },
         Err(err) => {
             eprintln!("error in log_rs_log: {:?}", err);
@@ -254,7 +252,6 @@ pub extern "C" fn log_st_set_max_level_rs(level: Level) {
 pub unsafe extern "C" fn log_st_unset_rs() -> bool {
     if let Some(g) = LOGGER {
         g.flush();
-        drop(*g);
         LOGGER = &None;
         return true;
     } else {
@@ -272,7 +269,7 @@ pub unsafe extern "C" fn log_st_unset_rs() -> bool {
 /// invalid the behavior is undefined.
 #[no_mangle]
 pub unsafe extern "C" fn log_st_flush_rs() {
-    if let Some(g) = *LOGGER {
+    if let Some(g) = LOGGER {
         g.flush();
     }
 }

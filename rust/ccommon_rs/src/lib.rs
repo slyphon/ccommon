@@ -8,6 +8,8 @@ extern crate lazy_static;
 extern crate log as rslog;
 extern crate tempfile;
 extern crate time;
+extern crate thread_local;
+extern crate thread_id;
 
 use std::result;
 

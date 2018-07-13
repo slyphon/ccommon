@@ -67,6 +67,13 @@ void log_st_set_max_level_rs(log_level_rs_e level);
 bool log_st_unset_rs(void);
 void log_st_flush_rs(void);
 
+struct log_mt_config_rs {
+    char *path;
+    char *file_basename;
+    uint32_t buf_size;
+    log_level_rs_e level;
+};
+
 #ifdef __cplusplus
 }
 #endif

@@ -16,14 +16,16 @@
 #![allow(dead_code)]
 
 use cc_binding as bind;
-use rslog::{Log, Metadata, Record, SetLoggerError};
-pub use rslog::Level;
+pub use rslog::{Level, Log, Metadata, Record, SetLoggerError};
 use rslog::LevelFilter;
 use std::cell::RefCell;
-use std::ptr;
+use std::ffi::CString;
+use std::io::{Cursor, Write};
+pub use super::Result;
 use time;
 
 pub mod st;
+pub mod mt;
 
 // TODO(simms): add C-side setup code here.
 
@@ -37,6 +39,8 @@ pub struct logger {
 }
 */
 
+const PER_THREAD_BUF_SIZE: usize = 4096;
+
 #[derive(Fail, Debug)]
 pub enum LoggingError {
     #[fail(display = "logging already set up")]
@@ -44,6 +48,12 @@ pub enum LoggingError {
 
     #[fail(display = "Other logger has already been set up with log crate")]
     LoggerRegistrationFailure,
+
+    #[fail(
+        display = "cc_log_create failed. see stderr for message. path: {}, buf_size: {}",
+        path, buf_size
+    )]
+    CreationError { path: String, buf_size: u32 },
 }
 
 impl From<SetLoggerError> for LoggingError {
@@ -52,25 +62,39 @@ impl From<SetLoggerError> for LoggingError {
     }
 }
 
-struct CLogger(RefCell<bind::logger>);
+struct CLogger(*mut bind::logger);
 
 impl CLogger {
-    /// Takes a raw pointer to a bind::logger struct and internalizes a copy of that
-    /// struct for the lifetime of this object.
     pub unsafe fn from_raw(p: *mut bind::logger) -> CLogger {
-        CLogger(RefCell::new(ptr::read(p)))
+        CLogger(p)
     }
 
-    pub unsafe fn write(&self, message: &str) -> bool {
-        let msg = message.as_bytes();
-        let b = bind::log_write(self.0.as_ptr(), msg.as_ptr() as *mut i8, msg.len() as u32);
+    pub unsafe fn write(&self, msg: &[u8]) -> bool {
+        let b = bind::log_write(self.0, msg.as_ptr() as *mut i8, msg.len() as u32);
         if !b {
-            eprintln!("failed to write to log: {}", message);
+            eprintln!("failed to write to log: {:#?}", &msg);
         }
         b
     }
 
-    pub unsafe fn flush(&self) { bind::log_flush(self.0.as_ptr()); }
+    pub unsafe fn flush(&self) { bind::log_flush(self.0); }
+
+    pub unsafe fn open(path: &str, buf_size: u32) -> super::Result<CLogger> {
+        let p: *mut bind::logger =
+            bind::log_create(CString::new(path)?.as_ptr() as *mut i8, buf_size);
+
+        if p.is_null() {
+            return Err(LoggingError::CreationError {path: path.to_owned(), buf_size}.into())
+        }
+
+        Ok(CLogger(p))
+    }
+}
+
+impl Drop for CLogger {
+    fn drop(&mut self) {
+        unsafe { bind::log_destroy(&mut self.0) }
+    }
 }
 
 
@@ -86,10 +110,14 @@ trait RawWrapper: Log {
 struct Logger {
     inner: CLogger,
     filter: LevelFilter,
+    buf: RefCell<Vec<u8>>,
 }
 
 impl Logger {
-    fn new(inner: CLogger, filter: LevelFilter) -> Self { Logger{inner, filter} }
+    fn new(inner: CLogger, filter: LevelFilter) -> Self {
+        let buf = RefCell::new(Vec::with_capacity(PER_THREAD_BUF_SIZE));
+        Logger{inner, filter, buf}
+    }
 }
 
 // This is a VICIOUS LIE. We're not safe for mt use,
@@ -110,6 +138,26 @@ impl RawWrapper for Logger {
     fn is_none(&self) -> bool { false }
 }
 
+fn format(record: &Record, buf: &mut Vec<u8>) -> Result<usize> {
+    let tm = time::now_utc();
+
+    let mut curs = Cursor::new(buf);
+
+    let ts = time::strftime("%Y-%m-%d %H:%M:%S", &tm).unwrap();
+
+    writeln!(
+        curs,
+        "{}.{:06} {:<5} [{}] {}",
+        ts,
+        tm.tm_nsec,
+        record.level().to_string(),
+        record.module_path().unwrap_or_default(),
+        record.args()
+    )?;
+
+    Ok(curs.position() as usize)
+}
+
 impl Log for Logger {
     #[inline]
     fn enabled(&self, metadata: &Metadata) -> bool {
@@ -120,14 +168,9 @@ impl Log for Logger {
         // taken from borntyping/rust-simple_logger
         if self.enabled(record.metadata()) {
             if let Some(clog) = self.clogger() {
-                let msg = format!(
-                    "{} {:<5} [{}] {}\n", /* TODO: microseconds */
-                    time::strftime("%Y-%m-%d %H:%M:%S", &time::now()).unwrap(),
-                    record.level().to_string(),
-                    record.module_path().unwrap_or_default(),
-                    record.args());
-
-                unsafe { clog.write(msg.as_ref()); }
+                let mut buf = self.buf.borrow_mut();
+                let sz = format(record, &mut buf).unwrap();
+                unsafe { clog.write(&buf[0..sz]); }
             }
         }
     }
@@ -163,6 +206,8 @@ pub enum LoggerStatus {
     RegistrationFailure = 2,
     LoggerAlreadySetError = 3,
     InvalidUTF8 = 4,
+    CreationError = 5,
+    OtherFailure = 6,
 }
 
 impl From<LoggingError> for LoggerStatus {
@@ -170,6 +215,7 @@ impl From<LoggingError> for LoggerStatus {
         match e {
             LoggingError::LoggerRegistrationFailure => LoggerStatus::RegistrationFailure,
             LoggingError::LoggingAlreadySetUp => LoggerStatus::LoggerAlreadySetError,
+            LoggingError::CreationError{..} => LoggerStatus::CreationError,
         }
     }
 }
