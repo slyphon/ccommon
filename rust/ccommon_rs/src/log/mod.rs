@@ -23,21 +23,12 @@ use std::ffi::CString;
 use std::io::{Cursor, Write};
 pub use super::Result;
 use time;
+use ptrs;
 
 pub mod st;
 pub mod mt;
 
 // TODO(simms): add C-side setup code here.
-
-/*
-binding:
-
-pub struct logger {
-    pub name: *mut ::std::os::raw::c_char,
-    pub fd: ::std::os::raw::c_int,
-    pub buf: *mut rbuf,
-}
-*/
 
 const PER_THREAD_BUF_SIZE: usize = 4096;
 
@@ -54,7 +45,12 @@ pub enum LoggingError {
         path, buf_size
     )]
     CreationError { path: String, buf_size: u32 },
+
 }
+
+#[derive(Fail, Debug)]
+#[fail(display = "Null pointer exception")]
+struct NullPointerError;
 
 impl From<SetLoggerError> for LoggingError {
     fn from(_: SetLoggerError) -> Self {
@@ -62,12 +58,13 @@ impl From<SetLoggerError> for LoggingError {
     }
 }
 
+
 #[doc(hidden)]
 pub struct CLogger(*mut bind::logger);
 
 impl CLogger {
-    pub unsafe fn from_raw(p: *mut bind::logger) -> CLogger {
-        CLogger(p)
+    pub unsafe fn from_raw(p: *mut bind::logger) -> super::Result<CLogger> {
+        ptrs::null_check(p).map(|p| CLogger(p)).map_err(|e| e.into())
     }
 
     pub unsafe fn write(&self, msg: &[u8]) -> bool {
@@ -81,14 +78,11 @@ impl CLogger {
     pub unsafe fn flush(&self) { bind::log_flush(self.0); }
 
     pub unsafe fn open(path: &str, buf_size: u32) -> super::Result<CLogger> {
-        let p: *mut bind::logger =
-            bind::log_create(CString::new(path)?.into_raw(), buf_size);
+        let p = bind::log_create(CString::new(path)?.into_raw(), buf_size);
 
-        if p.is_null() {
-            return Err(LoggingError::CreationError {path: path.to_owned(), buf_size}.into())
-        }
-
-        Ok(CLogger(p))
+        ptrs::lift_to_option(p)
+            .ok_or_else(|| LoggingError::CreationError {path: path.to_owned(), buf_size}.into())
+            .map(CLogger)
     }
 
     pub fn as_mut_ptr(&mut self) -> *mut bind::logger { self.0 }
@@ -211,6 +205,7 @@ pub enum LoggerStatus {
     InvalidUTF8 = 4,
     CreationError = 5,
     OtherFailure = 6,
+    NullPointerError = 7,
 }
 
 impl From<LoggingError> for LoggerStatus {
@@ -245,9 +240,10 @@ impl From<usize> for ModuleState {
     }
 }
 
-#[doc(hidden)] // visible for integration testing
-pub struct LogMetrics(*mut bind::log_metrics_st);
+#[cfg(test)]
+pub(in log) struct LogMetrics(*mut bind::log_metrics_st);
 
+#[cfg(test)]
 impl LogMetrics {
     pub fn new() -> Self {
         let ptr = unsafe { bind::log_metrics_create() };
@@ -258,6 +254,7 @@ impl LogMetrics {
     pub fn as_mut_ptr(&mut self) -> *mut bind::log_metrics_st { self.0 }
 }
 
+#[cfg(test)]
 impl Drop for LogMetrics {
     fn drop(&mut self) {
         unsafe { bind::log_metrics_destroy(&mut self.0) }

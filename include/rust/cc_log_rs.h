@@ -74,6 +74,11 @@ struct log_mt_config_rs {
     log_level_rs_e level;
 };
 
+struct Handle;
+
+struct Handle* log_mt_create_handle(struct log_mt_config_rs *cfg);
+void log_mt_destroy_handle(struct Handle **h);
+
 #ifdef __cplusplus
 }
 #endif

@@ -20,4 +20,7 @@ use std::result;
 pub mod bstring;
 pub mod log;
 
+// like how guava provides enhancements for Int as "Ints"
+pub mod ptrs;
+
 pub type Result<T> = result::Result<T, failure::Error>;

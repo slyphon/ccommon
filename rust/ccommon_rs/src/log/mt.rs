@@ -14,7 +14,7 @@
 // limitations under the License.
 
 use cc_binding as bind;
-use crossbeam::sync::ArcCell;
+use failure;
 use log::*;
 use rslog;
 use std::cell::RefCell;
@@ -25,6 +25,8 @@ use std::sync::Arc;
 use std::thread;
 use thread_id;
 use thread_local::CachedThreadLocal;
+use ptrs;
+use crossbeam::sync::ArcCell;
 
 #[repr(C)]
 pub struct LogConfig {
@@ -52,15 +54,17 @@ pub struct log_mt_config_rs {
 */
 
 impl LogConfig {
-    pub unsafe fn from_raw(ptr: *mut bind::log_mt_config_rs) -> Result<Self> {
-        let cfg = LogConfig {
-            path: CString::from_raw((*ptr).path).to_str()?.to_owned(),
-            file_basename: CString::from_raw((*ptr).file_basename).to_str()?.to_owned(),
-            buf_size: (*ptr).buf_size,
-            level: Self::from_usize((*ptr).level as usize).unwrap(),
-        };
-
-        Ok(cfg)
+    pub fn from_raw(ptr: *mut bind::log_mt_config_rs) -> Result<Self> {
+        ptrs::lift_to_option(ptr)
+            .ok_or_else(|| NullPointerError.into())
+            .and_then(|ptr| {
+                Ok(LogConfig {
+                    path: unsafe { CString::from_raw((*ptr).path).to_str()?.to_owned() },
+                    file_basename: unsafe { CString::from_raw((*ptr).file_basename) }.to_str()?.to_owned(),
+                    buf_size: unsafe {(*ptr).buf_size},
+                    level: Self::from_usize(unsafe { (*ptr).level } as usize).unwrap(),
+                })
+            })
     }
 
     fn to_path_buf(&self, thread_id: &str) -> PathBuf {
@@ -117,9 +121,11 @@ impl Log for PerThreadLog {
     }
 
     fn log(&self, record: &Record) {
-        let mut buf = self.buf.borrow_mut();
-        let sz = format(record, &mut buf).unwrap();
-        unsafe { self.clogger.write(&buf[0..sz]); }
+        if self.enabled(record.metadata()) {
+            let mut buf = self.buf.borrow_mut();
+            let sz = format(record, &mut buf).unwrap();
+            unsafe { self.clogger.write(&buf[0..sz]); }
+        }
     }
 
     fn flush(&self) {
@@ -127,18 +133,44 @@ impl Log for PerThreadLog {
     }
 }
 
+#[repr(C)]
 struct Shim {
-    tls: CachedThreadLocal<PerThreadLog>,
+    tls: CachedThreadLocal<RefCell<Option<PerThreadLog>>>,
     cfg: LogConfig,
 }
 
 impl Shim {
-    fn get_per_thread(&self) -> super::Result<&PerThreadLog> {
-        self.tls.get_or_try(|| PerThreadLog::for_current(&self.cfg).map(Box::new) )
+    fn get_per_thread(&self) -> super::Result<&RefCell<Option<PerThreadLog>>> {
+        self.tls.get_or_try(||
+            PerThreadLog::for_current(&self.cfg)
+                .map(|ptl| Box::new(RefCell::new(Some(ptl))) )
+        )
     }
 
     fn new(cfg: LogConfig) -> Self {
         Shim { cfg, tls: CachedThreadLocal::new() }
+    }
+
+    fn shutdown(&mut self) {
+        for cell in self.tls.iter_mut() {
+            if let Some(ptl) = cell.replace(None) {
+                ptl.flush();
+                drop(ptl);
+            }
+        }
+    }
+
+    #[inline]
+    fn borrow_and_call<F>(&self, f: F) -> Option<failure::Error>
+        where F: FnOnce(&PerThreadLog)
+    {
+        self.get_per_thread()
+            .map(|cell| {
+                if let Some(ptl) = &*cell.borrow() {
+                    f(ptl);
+                }
+            })
+            .err()
     }
 }
 
@@ -150,78 +182,101 @@ impl Log for Shim {
 
     #[allow(single_match)]
     fn log(&self, record: &Record) {
-        match self.get_per_thread() {
-            Ok(log) => log.log(record),
-            Err(_) => () /* what to do here */
+        if let Some(err) = self.borrow_and_call(|ptl| ptl.log(record)) {
+            eprintln!("err in Shim::log {:#?}", err);
         }
     }
 
     #[allow(single_match)]
     fn flush(&self) {
-        match self.get_per_thread() {
-            Ok(log) => log.flush(),
-            Err(_) => () /* what do? */
+        if let Some(err) = self.borrow_and_call(|ptl| ptl.flush()) {
+            eprintln!("err in Shim::flush {:#?}", err);
         }
     }
 }
 
-
-struct Logger(Arc<ArcCell<Shim>>);
+#[repr(C)]
+struct Logger(Arc<ArcCell<Option<Shim>>>);
 
 impl Log for Logger {
     fn enabled(&self, metadata: &Metadata) -> bool {
-        self.0.get().enabled(metadata)
+        if let Some(n) = &*self.0.get() {
+            n.enabled(metadata)
+        } else {
+            false
+        }
     }
 
     fn log(&self, record: &Record) {
-        self.0.get().log(record)
+        if let Some(log) = &*self.0.get() {
+            log.log(record);
+        }
     }
 
     fn flush(&self) {
-        self.0.get().flush()
-    }
-}
-
-
-pub struct Handle {
-    shim: Arc<ArcCell<Shim>>
-}
-
-#[doc(hidden)] // visible for testing
-pub fn log_mt_setup_safe(config: LogConfig) -> *mut Handle {
-    rslog::set_max_level(config.level.to_level_filter());
-    let shim = Shim::new(config);
-    let logger = Logger(Arc::new(ArcCell::new(Arc::new(shim))));
-    let handle = Box::new(Handle{shim: logger.0.clone()});
-
-    match rslog::set_boxed_logger(Box::new(logger)) {
-        Ok(()) => Box::into_raw(handle),
-        Err(err) => {
-            eprintln!("log_mt_setup error {:?}", err);
-            return ptr::null_mut();
+        if let Some(log) = &*self.0.get() {
+            log.flush();
         }
     }
+}
+
+
+#[repr(C)]
+/// This is essentially `Arc->ArcCell->Arc->Option->Shim`. The outermost `Arc` is shared
+/// between the log crate (wrapped in a `Logger` instance) and this `Handle` that
+/// we return to the user to allow them to shut down.
+///
+/// We perform the shutdown
+/// by first swapping out the innermost `Arc` for a no-op (None) version, then unboxing and
+/// shutting down the per-thread loggers in the `Shim`.
+pub struct Handle {
+    shim: Arc<ArcCell<Option<Shim>>>
+}
+
+fn log_mt_setup_safe(config: LogConfig) -> Result<Handle> {
+    rslog::set_max_level(config.level.to_level_filter());
+    let shim = Shim::new(config);
+    let logger = Logger(Arc::new(ArcCell::new(Arc::new(Some(shim)))));
+
+    let handle = Handle{shim: logger.0.clone()};
+
+    rslog::set_boxed_logger(Box::new(logger))
+        .map(|()| handle)
+        .map_err(|e| e.into())
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn log_mt_setup(cfg: *mut bind::log_mt_config_rs) -> *mut Handle {
-    let config = match LogConfig::from_raw(cfg) {
-        Ok(c) => c,
-        Err(err) => {
-            eprintln!("log_mt_setup error {:?}", err);
-            return ptr::null_mut();
-        }
-    };
+pub unsafe extern "C" fn log_mt_create_handle(cfgp: *mut bind::log_mt_config_rs) -> *mut Handle {
+    ptrs::null_check(cfgp)                              // make sure our input is good
+        .map_err(|e| e.into())                          // error type bookkeeping
+        .and_then(LogConfig::from_raw)                  // convert the *mut into a rust struct
+        .and_then(log_mt_setup_safe)                    // register our logger
+        .map(|handle| Box::into_raw(Box::new(handle)))  // convert our handle into a raw pointer
+        .unwrap_or_else(|err| {                         // hand it back to C
+            eprintln!("failure in log_mt_create_handle: {:#?}", err);
+            ptr::null_mut()                             // unless there was an error, then return NULL
+        })
+}
 
-    log_mt_setup_safe(config)
+#[no_mangle]
+pub unsafe extern "C" fn log_mt_shutdown(_ph: *mut Handle) {
+    unimplemented!()
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn log_mt_destroy_handle(pph: *mut *mut Handle) {
+    assert!(!pph.is_null());
+    let ph = *pph;
+    drop(Box::from_raw(ph));
+    
 }
 
 #[cfg(test)]
 mod test {
+    use std::fs;
+    use std::thread;
     use super::*;
     use tempfile;
-    use std::thread;
-    use std::fs;
 
     // this is necessary until https://github.com/rust-lang/rust/issues/48854
     // lands in stable
@@ -247,8 +302,7 @@ mod test {
                 level: Level::Trace,
             };
 
-            let handle = log_mt_setup_safe(cfg);
-            assert!(!handle.is_null());
+            let handle = log_mt_setup_safe(cfg).unwrap();
 
             let t1 = thread::spawn(move || {
                 error!("thread 1 error");
@@ -258,9 +312,22 @@ mod test {
                 warn!("thread 2 error");
             });
 
-
             t1.join().unwrap();
             t2.join().unwrap();
+
+            let mut active: Arc<Option<Shim>> = {
+                handle.shim.set(Arc::new(None))
+            };
+
+            if let Some(opt_shim) = Arc::get_mut(&mut active) {
+                if let Some(shim) = opt_shim {
+                    shim.shutdown();
+                }
+            } else {
+                eprintln!("failed to get_mut on the active logger");
+            }
+
+            drop(active);
 
             for entry in fs::read_dir(tmpdir.path())? {
                 if let Ok(entry) = entry {
