@@ -48,10 +48,6 @@ pub enum LoggingError {
 
 }
 
-#[derive(Fail, Debug)]
-#[fail(display = "Null pointer exception")]
-struct NullPointerError;
-
 impl From<SetLoggerError> for LoggingError {
     fn from(_: SetLoggerError) -> Self {
         LoggingError::LoggerRegistrationFailure
@@ -64,7 +60,7 @@ pub struct CLogger(*mut bind::logger);
 
 impl CLogger {
     pub unsafe fn from_raw(p: *mut bind::logger) -> super::Result<CLogger> {
-        ptrs::null_check(p).map(|p| CLogger(p)).map_err(|e| e.into())
+        ptrs::null_check(p).map(CLogger).map_err(|e| e.into())
     }
 
     pub unsafe fn write(&self, msg: &[u8]) -> bool {
