@@ -27,6 +27,7 @@ use std::sync::Arc;
 use std::thread;
 use thread_id;
 use thread_local::CachedThreadLocal;
+use time;
 
 #[repr(C)]
 pub struct LogConfig {
@@ -224,22 +225,32 @@ pub struct Handle {
 }
 
 impl Handle {
-    fn shutdown(&mut self) {
+    fn shutdown(&mut self, timeout: time::Duration) {
         let mut active: Arc<Option<Shim>> = self.shim.set(Arc::new(None));
 
-        if let Some(opt_shim) = Arc::get_mut(&mut active) {
-            if let Some(shim) = opt_shim {
-                shim.shutdown();
+        let stop_at = time::SteadyTime::now() + timeout;
+
+        loop {
+            if let Some(opt_shim) = Arc::get_mut(&mut active) {
+                if let Some(shim) = opt_shim {
+                    shim.shutdown();
+                    break
+                }
+            } else {
+                eprintln!("failed to get_mut on the active logger");
+                thread::yield_now();
             }
-        } else {
-            eprintln!("failed to get_mut on the active logger");
+
+            if time::SteadyTime::now() < stop_at {
+                break
+            }
         }
     }
 }
 
 impl Drop for Handle {
     fn drop(&mut self) {
-        self.shutdown();
+        self.shutdown(time::Duration::zero());
     }
 }
 
@@ -293,6 +304,8 @@ mod test {
     use super::*;
     use std::fs;
     use tempfile;
+    use time;
+    use std::sync::mpsc;
 
 
     // this is necessary until https://github.com/rust-lang/rust/issues/48854
@@ -334,21 +347,12 @@ mod test {
 
             drop(handle);
 
-            for entry in fs::read_dir(tmpdir.path())? {
-                if let Ok(entry) = entry {
-                    if let Ok(metadata) = entry.metadata() {
-                        eprintln!("{:?}: {:#?}", entry.path(), metadata)
-                    }
-                }
-            }
-
             Ok(())
         })
     }
 
-
     fn build(name: &str) -> thread::Builder {
-        thread::Builder::new().name("key".to_owned())
+        thread::Builder::new().name(name.to_owned())
     }
 
     fn named_threads_test() {
@@ -379,16 +383,97 @@ mod test {
 
             drop(handle);
 
-            for entry in fs::read_dir(tmpdir.path())? {
-                if let Ok(entry) = entry {
-                    if let Ok(metadata) = entry.metadata() {
-                        eprintln!("{:?}: {:#?}", entry.path(), metadata);
-                    }
-                }
-            };
+            {
+                let mut dlevelp = tmpdir.path().to_owned();
+                dlevelp.push("testmt.d_level.log");
+                let md = fs::metadata(dlevelp)?;
+                assert!(md.len() > 0);
+            }
+
+            {
+                let mut wlevelp = tmpdir.path().to_owned();
+                wlevelp.push("testmt.w_level.log");
+                let md = fs::metadata(wlevelp)?;
+                assert!(md.len() > 0);
+            }
 
             Ok(())
+        })
+    }
 
+
+    fn mt_shutdown_resilience_test() {
+        assert_result(||{
+            // make sure a thread logging doesn't crash if we shutdown simultaneously
+            let mut stats = LogMetrics::new();
+            unsafe { bind::log_setup(stats.as_mut_ptr()) };
+            let tmpdir = tempfile::tempdir()?;
+
+            let cfg = LogConfig {
+                path: tmpdir.path().to_path_buf().to_str().unwrap().to_owned(),
+                file_basename: String::from("testmt"),
+                buf_size: 0,
+                level: Level::Trace,
+            };
+
+            let handle = log_mt_setup_safe(cfg).unwrap();
+
+            let (start_tx, start_rx) = mpsc::sync_channel::<String>(0);
+            let (stop_tx, stop_rx) = mpsc::sync_channel::<bool>(0);
+            let (loop_tx, loop_rx) = mpsc::sync_channel::<u64>(300);
+
+            eprintln!("start thread");
+            let th = build("worker").spawn(move||{
+                eprintln!("thread started, waiting for signal");
+                let msg = start_rx.try_recv().unwrap();
+
+                eprintln!("got start msg: {}", msg);
+
+                let mut count: u64 = 0;
+                loop {
+                    let tm = time::now_utc();
+                    trace!("{:#?}", tm.to_timespec());
+                    count += 1;
+                    loop_tx.send(count).unwrap();
+
+                    match stop_rx.try_recv() {
+                        Ok(_) => {
+                            eprintln!("received stop signal");
+                            break;
+                        },
+                        Err(mpsc::TryRecvError::Disconnected) => {
+                            eprintln!("gah! disconnected!");
+                            panic!("bad things!");
+                        },
+                        Err(mpsc::TryRecvError::Empty) => ()
+                    };
+                }
+
+                eprintln!("while loop exited");
+                count
+            }).unwrap();
+
+            start_tx.send("GO!".to_owned())?;
+
+            let delay = ::std::time::Duration::from_millis(100);
+
+            assert_eq!(loop_rx.recv_timeout(delay)?, 1);
+
+            eprintln!("dropping handle");
+            drop(handle);
+
+            // make sure the thread writes another message or two
+            assert_eq!(loop_rx.recv_timeout(delay)?, 2);
+            assert_eq!(loop_rx.recv_timeout(delay)?, 3);
+
+            // signal to the thread that it should exit
+            stop_tx.send(true)?;
+
+            eprintln!("joining");
+            let count = th.join().unwrap();
+            eprintln!("thread joined, wrote {} messages", count);
+
+            Ok(())
         })
     }
 
@@ -396,9 +481,16 @@ mod test {
     rusty_fork_test! {
         #[test]
         fn test_basic_mt_roundtrip() { basic_mt_roundtrip(); }
+    }
 
+    rusty_fork_test! {
         #[test]
         fn test_named_threads() { named_threads_test(); }
     }
 
+    rusty_fork_test! {
+        #[test]
+        fn test_shutdown_resilience() { mt_shutdown_resilience_test(); }
+    }
 }
+
