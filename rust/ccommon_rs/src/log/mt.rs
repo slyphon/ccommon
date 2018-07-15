@@ -65,12 +65,16 @@ impl LogConfig {
         ptrs::lift_to_option(ptr)
             .ok_or_else(|| ptrs::NullPointerError.into())
             .and_then(|ptr| {
-                Ok(LogConfig {
-                    path: unsafe { CString::from_raw((*ptr).path).to_str()?.to_owned() },
-                    file_basename: unsafe { CString::from_raw((*ptr).file_basename) }.to_str()?.to_owned(),
-                    buf_size: unsafe {(*ptr).buf_size},
-                    level: Self::from_usize(unsafe { (*ptr).level } as usize).unwrap(),
-                })
+                let path = unsafe { CString::from_raw((*ptr).path).to_str()?.to_owned() };
+
+                let file_basename = unsafe {
+                    CString::from_raw((*ptr).file_basename)
+                }.to_str()?.to_owned();
+
+                let buf_size = unsafe {(*ptr).buf_size};
+                let level = Self::from_usize(unsafe { (*ptr).level } as usize).unwrap();
+
+                Ok(LogConfig{path, file_basename, buf_size, level})
             })
     }
 
@@ -143,7 +147,9 @@ impl Log for PerThreadLog {
     }
 }
 
-#[repr(C)]
+/// Shim is what gets called by the log crate. It holds the config,
+/// creates PerThreadLogs on demand, and holds a reference to all
+/// the thread local loggers.
 struct Shim {
     tls: CachedThreadLocal<RefCell<Option<PerThreadLog>>>,
     cfg: LogConfig,
@@ -265,9 +271,11 @@ impl Log for Logger {
 /// by first swapping out the innermost `Arc` for a no-op (None) version, then unboxing and
 /// shutting down the per-thread loggers in the `Shim`.
 #[repr(C)]
-pub struct Handle {
+pub struct log_mt_handle_rs {
     shim: Arc<ArcCell<Option<Shim>>>
 }
+
+type Handle = log_mt_handle_rs;
 
 impl Handle {
     fn shutdown(&mut self, timeout: time::Duration) {
@@ -304,7 +312,7 @@ fn log_mt_setup_safe(config: LogConfig) -> Result<Handle> {
     let shim = Shim::new(config);
     let logger = Logger(Arc::new(ArcCell::new(Arc::new(Some(shim)))));
 
-    let handle = Handle{shim: logger.0.clone()};
+    let handle = Handle {shim: logger.0.clone()};
 
     rslog::set_boxed_logger(Box::new(logger))
         .map(|()| handle)

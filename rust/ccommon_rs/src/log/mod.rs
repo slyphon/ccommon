@@ -100,6 +100,7 @@ trait RawWrapper: Log {
     fn is_none(&self) -> bool;
 }
 
+#[doc(hidden)]
 struct Logger {
     inner: CLogger,
     filter: LevelFilter,
@@ -216,6 +217,7 @@ impl From<LoggingError> for LoggerStatus {
 
 
 #[repr(usize)]
+#[doc(hidden)]
 #[derive(Debug, Eq, PartialEq)]
 enum ModuleState {
     UNINITIALIZED = 0,

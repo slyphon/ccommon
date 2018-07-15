@@ -47,6 +47,12 @@ typedef enum log_status_rs {
     LOG_STATUS_ALREADY_SET_ERROR,
     /* Data was expected to be valid UTF8 but was not */
     LOG_STATUS_INVALID_UTF8,
+    /* Failed to create a logger instance */
+    LOG_STATUS_CREATION_ERROR,
+    /* An unexpected error occurred, check stderr */
+    LOG_STATUS_OTHER_FAILURE,
+    /* You suck at programming */
+    LOG_STATUS_NULL_POINTER_ERROR,
 } log_status_rs_e;
 
 log_status_rs_e log_st_setup_rs(void);
@@ -74,10 +80,13 @@ struct log_mt_config_rs {
     log_level_rs_e level;
 };
 
-struct Handle;
+struct log_mt_handle_rs;
 
-struct Handle* log_mt_create_handle(struct log_mt_config_rs *cfg);
-void log_mt_destroy_handle(struct Handle **h);
+struct log_mt_handle_rs* log_mt_create_handle_rs(struct log_mt_config_rs *cfg);
+log_status_rs_e log_mt_shutdown_rs(struct log_mt_handle_rs *handle);
+void log_mt_destroy_handle_rs(struct log_mt_handle_rs **h);
+
+bool log_mt_test_threaded_writes_rs(struct log_mt_handle_rs *handle);
 
 #ifdef __cplusplus
 }
