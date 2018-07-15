@@ -16,6 +16,7 @@
 #![allow(dead_code)]
 
 use cc_binding as bind;
+use ptrs;
 pub use rslog::{Level, Log, Metadata, Record, SetLoggerError};
 use rslog::LevelFilter;
 use std::cell::RefCell;
@@ -23,7 +24,6 @@ use std::ffi::CString;
 use std::io::{Cursor, Write};
 pub use super::Result;
 use time;
-use ptrs;
 
 pub mod st;
 pub mod mt;

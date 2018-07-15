@@ -13,7 +13,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Glue between rust's standard `log` crate and ccommon's cc_log logger.
+//! Single-thread glue between rust's standard `log` crate and ccommon's cc_log logger.
 //!
 //! This library allows rust embedded into projects using ccommon to use
 //! the same logger provided by `cc_log.h`

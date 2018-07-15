@@ -16,8 +16,8 @@
 //! This module contains the bindgen created classes.
 //! PRO-TIP: If you want to look at the generated code, you can find it with:
 //!
-//! ```
-//! $ find . -name 'bindgen.rs'
+//! ```ignore
+//! $ find . -name bindgen.rs
 //! ```
 //!
 

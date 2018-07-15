@@ -13,6 +13,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//! Threadsafe glue between the `log` crate and `cc_log`.
+//!
+//! The C side configures this module with a directory and base filename.
+//! When a Rust thread calls one of the logging macros, a new logger is
+//! created with a unique filename (based either on the thread's name or
+//! its posix unique id) and stored in a thread local variable. At shutdown,
+//! the struct that refers to the thread-local loggers is atomically
+//! swapped out for a no-op logger, and the thread-local loggers are flushed
+//! and shut down cleanly.
+//!
+//! This configuration is a shared-nothing lockless design...for _SPEED_.
+
 use cc_binding as bind;
 use crossbeam::sync::ArcCell;
 use failure;
@@ -48,6 +60,7 @@ pub struct LogConfig {
 
 
 impl LogConfig {
+    #[doc(hidden)]
     pub fn from_raw(ptr: *mut bind::log_mt_config_rs) -> Result<Self> {
         ptrs::lift_to_option(ptr)
             .ok_or_else(|| ptrs::NullPointerError.into())
@@ -82,8 +95,11 @@ impl LogConfig {
 
 
 struct PerThreadLog {
+    /// The underlying cc_log logger instance
     clogger: CLogger,
+    /// The cached thread name or unique identifier
     thread_name: String,
+    /// This buffer is used for preparing the message to be logged
     buf: RefCell<Vec<u8>>,
 }
 
@@ -186,7 +202,11 @@ impl Log for Shim {
     }
 }
 
-#[repr(C)]
+/// This is the Log instance we give to the log crate. Its job is to
+/// hold onto the `Shim` and dispatch calls to it. See `Handle`
+/// for a description of the inner structure.
+///
+#[doc(hidden)]
 struct Logger(Arc<ArcCell<Option<Shim>>>);
 
 impl Log for Logger {
@@ -212,14 +232,39 @@ impl Log for Logger {
 }
 
 
-#[repr(C)]
 /// This is essentially `Arc->ArcCell->Arc->Option->Shim`. The outermost `Arc` is shared
-/// between the log crate (wrapped in a `Logger` instance) and this `Handle` that
+/// between the log crate and this `Handle` that
 /// we return to the user to allow them to shut down.
+///
+/// ```
+///
+///       +-------------------------------+
+///       |                               |
+///       |                               |
+/// +----------+                          |
+/// |   Arc    |                          v
+/// |          |            +--------------------------+
+/// |  Logger  |            |          ArcCell         |
+/// |          |            | +----------------------+ |
+/// |          |            | |         Arc          | |
+/// +----------+            | |    +------------+    | |
+///                         | |    |   Option   |    | |
+/// +----------+            | |    |  +------+  |    | |
+/// |          |            | |    |  | Shim |  |    | |
+/// |          |            | |    |  +------+  |    | |
+/// |  Handle  |            | |    +------------+    | |
+/// |          |            | +----------------------+ |
+/// |   Arc    |            |                          |
+/// +----------+            +--------------------------+
+///       |                               ^
+///       |                               |
+///       +-------------------------------+
+/// ```
 ///
 /// We perform the shutdown
 /// by first swapping out the innermost `Arc` for a no-op (None) version, then unboxing and
 /// shutting down the per-thread loggers in the `Shim`.
+#[repr(C)]
 pub struct Handle {
     shim: Arc<ArcCell<Option<Shim>>>
 }
@@ -280,7 +325,7 @@ pub unsafe extern "C" fn log_mt_create_handle(cfgp: *mut bind::log_mt_config_rs)
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn log_mt_shutdown(ph: *mut Handle) -> LoggerStatus {
+pub unsafe extern "C" fn log_mt_shutdown_rs(ph: *mut Handle) -> LoggerStatus {
     let handle =
         match ptrs::lift_to_option(ph) {
             Some(ph) => Box::from_raw(ph),
@@ -292,20 +337,42 @@ pub unsafe extern "C" fn log_mt_shutdown(ph: *mut Handle) -> LoggerStatus {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn log_mt_destroy_handle(pph: *mut *mut Handle) {
+pub unsafe extern "C" fn log_mt_destroy_handle_rs(pph: *mut *mut Handle) {
     assert!(!pph.is_null());
     let ph = *pph;
     drop(Box::from_raw(ph));
     *pph = ptr::null_mut();
 }
 
+// for integration testing with C
+#[doc(hidden)]
+#[no_mangle]
+pub unsafe extern "C" fn log_mt_test_threaded_writes_rs() -> bool {
+    let t1 = thread::spawn(move || {
+        for x in 0..10 {
+            error!("thread 1: {}", x);
+        }
+    });
+
+    let t2 = thread::spawn(move || {
+        for x in 0..10 {
+            warn!("thread 2: {}", x);
+        }
+    });
+
+    t1.join().unwrap();
+    t2.join().unwrap();
+
+    true
+}
+
 #[cfg(test)]
 mod test {
-    use super::*;
     use std::fs;
+    use std::sync::mpsc;
+    use super::*;
     use tempfile;
     use time;
-    use std::sync::mpsc;
 
 
     // this is necessary until https://github.com/rust-lang/rust/issues/48854
@@ -350,6 +417,7 @@ mod test {
             Ok(())
         })
     }
+
 
     fn build(name: &str) -> thread::Builder {
         thread::Builder::new().name(name.to_owned())
@@ -401,7 +469,6 @@ mod test {
         })
     }
 
-
     fn mt_shutdown_resilience_test() {
         assert_result(||{
             // make sure a thread logging doesn't crash if we shutdown simultaneously
@@ -424,9 +491,8 @@ mod test {
 
             eprintln!("start thread");
             let th = build("worker").spawn(move||{
-                eprintln!("thread started, waiting for signal");
+                eprintln!("thread started, waiting for message");
                 let msg = start_rx.try_recv().unwrap();
-
                 eprintln!("got start msg: {}", msg);
 
                 let mut count: u64 = 0;
