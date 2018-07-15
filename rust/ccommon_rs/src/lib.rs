@@ -19,6 +19,7 @@ use std::result;
 
 pub mod bstring;
 pub mod log;
+pub mod pool;
 
 // like how guava provides enhancements for Int as "Ints"
 pub mod ptrs;

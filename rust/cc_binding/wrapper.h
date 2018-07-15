@@ -2,3 +2,4 @@
 #include <buffer/cc_buf.h>
 #include <cc_log.h>
 #include <rust/cc_log_rs.h>
+#include <rust/cc_pool_rs.h>

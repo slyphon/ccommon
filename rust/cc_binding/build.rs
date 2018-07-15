@@ -9,7 +9,7 @@ use std::io::prelude::*;
 fn get_cmake_binary_dir() -> io::Result<String> {
     // this file is written by cmake on each run, updated with the location of
     // the build directory.
-    let mut fp = fs::File::open("CMAKE_BINARY_DIR")?;
+    let mut fp = fs::File::open("../CMAKE_BINARY_DIR")?;
     let mut buf = String::new();
     let n = fp.read_to_string(&mut buf)?;
     assert!(n > 0, "file was empty");
@@ -21,7 +21,10 @@ fn main() {
 
     let include_path = fs::canonicalize("./../../include").unwrap();
 
-    let cmake_binary_dir = get_cmake_binary_dir().unwrap();
+    let cmake_binary_dir = match get_cmake_binary_dir() {
+        Ok(p) => p,
+        Err(err) => panic!("Failed locating the CMAKE_BINARY_DIR file: {:#?}", err),
+    };
 
     let cbd = PathBuf::from(cmake_binary_dir);
 
