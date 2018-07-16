@@ -5,6 +5,7 @@ use std::fs;
 use std::io;
 use std::path::PathBuf;
 use std::io::prelude::*;
+use std::os::unix::fs as unix_fs;
 
 fn get_cmake_binary_dir() -> io::Result<String> {
     // this file is written by cmake on each run, updated with the location of
@@ -52,5 +53,18 @@ fn main() {
     bindings
         .write_to_file(out_path.join("bindings.rs"))
         .expect("Couldn't write bindings!");
+
+    // ./target/debug/build/cc_binding-27eac70f0fa2e180/out  <<- starts here
+
+    // cc_binding-27eac70f0fa2e180
+    let symlink_content =
+        out_path.parent().unwrap().file_name().unwrap();
+
+    let build_dir = out_path.parent().and_then(|p| p.parent()).unwrap();
+
+    let link_location = build_dir.join("cc_binding");
+
+    let _ = fs::remove_file(link_location.as_path());
+    unix_fs::symlink(symlink_content, link_location).unwrap();
 }
 

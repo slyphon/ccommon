@@ -28,8 +28,14 @@ pub fn lift_to_option<T>(p: *mut T) -> Option<*mut T> {
     }
 }
 
-pub fn null_check<T>(p: *mut T) -> result::Result<*mut T, NullPointerError> {
+pub fn null_check_mut<T>(p: *mut T) -> result::Result<*mut T, NullPointerError> {
     lift_to_option(p).ok_or_else(|| NullPointerError)
+}
+
+pub fn null_check<T>(p: *const T) -> result::Result<*const T, NullPointerError> {
+    lift_to_option(p as *mut T)
+        .map(|q| q as *const T)
+        .ok_or_else(|| NullPointerError)
 }
 
 pub fn opt_to_null_mut<T>(o: Option<*mut T>) -> *mut T {

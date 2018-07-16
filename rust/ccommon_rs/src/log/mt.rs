@@ -321,7 +321,7 @@ fn log_mt_setup_safe(config: LogConfig) -> Result<Handle> {
 
 #[no_mangle]
 pub unsafe extern "C" fn log_mt_create_handle(cfgp: *mut bind::log_mt_config_rs) -> *mut Handle {
-    ptrs::null_check(cfgp)                              // make sure our input is good
+    ptrs::null_check_mut(cfgp)                              // make sure our input is good
         .map_err(|e| e.into())                          // error type bookkeeping
         .and_then(LogConfig::from_raw)                  // convert the *mut into a rust struct
         .and_then(log_mt_setup_safe)                    // register our logger
