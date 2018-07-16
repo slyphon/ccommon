@@ -1,6 +1,10 @@
 #include <cc_mm.h>
 #include <cc_pool.h>
 
+#ifdef HAVE_RUST
+#include <rust/cc_pool_rs.h>
+#endif
+
 #include <check.h>
 
 #include <stdlib.h>
@@ -30,6 +34,42 @@ foo_destroy(struct foo **foo)
     cc_free(*foo);
     *foo = NULL;
 }
+
+#ifdef HAVE_RUST
+
+struct bar {
+    int x;
+    struct bstring bstring;
+};
+
+static void
+bar_init(struct bar *b)
+{
+    b->x = 0;
+
+    char *data = cc_alloc(4);
+    ck_assert_ptr_nonnull(data);
+    strncpy(data, "init", 4);
+
+    b->bstring.data = data;
+    b->bstring.len = 4;
+}
+
+static void
+bar_reset(struct bar *b)
+{
+    b->x = 0;
+    strncpy(b->bstring.data, "init", 4);
+}
+
+static void
+bar_destroy(struct bar *b)
+{
+    bstring_deinit(&b->bstring);
+}
+
+#endif
+
 
 /*
  * utilities
@@ -85,6 +125,38 @@ START_TEST(test_create_prealloc_destroy)
     ck_assert(!foop.initialized);
 }
 END_TEST
+
+#ifdef HAVE_RUST
+
+START_TEST(test_create_prealloc_destroy_rs)
+{
+    struct bar *a;
+    uint32_t max = 2;
+    struct bstring bs;
+    bstring_init(&bs);
+    bstring_set_raw(&bs, "init");
+
+    struct pool_config_rs config = {
+        .obj_size = sizeof(struct bar),
+        .nmax = max,
+        .init_callback = POOL_CALLBACK_RS(bar_init),
+        .reset_callback = POOL_CALLBACK_RS(bar_reset),
+        .destroy_callback = POOL_CALLBACK_RS(bar_destroy),
+    };
+
+    test_reset();
+
+    struct pool_handle_rs *h = pool_create_handle_rs(&config);
+
+    a = POOL_BORROW_RS(bar, h);
+
+    ck_assert_int_eq(bstring_compare(&a->bstring, &bs), 0);
+    POOL_RETURN_RS(h, a);
+    ck_assert_ptr_null(a);
+}
+END_TEST
+
+#endif
 
 START_TEST(test_prealloc_borrow_return)
 {
@@ -158,6 +230,7 @@ pool_suite(void)
     tcase_add_test(tc_pool, test_create_prealloc_destroy);
     tcase_add_test(tc_pool, test_prealloc_borrow_return);
     tcase_add_test(tc_pool, test_noprealloc_borrow_return);
+    tcase_add_test(tc_pool, test_create_prealloc_destroy_rs);
 
     suite_add_tcase(s, tc_pool);
 

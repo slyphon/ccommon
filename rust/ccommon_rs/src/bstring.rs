@@ -9,9 +9,12 @@ use std::slice;
 use std::result::Result;
 use std::str::Utf8Error;
 use std::str;
+use std::mem;
+
+pub type RawBString = bind::bstring;
 
 
-pub type BString = bind::bstring;
+// TODO: Differentiate between native (rust-allocated) bstrings and foreign (c-allocated) ones
 
 /// A wrapper around a string reference that returns a properly initialized `*mut bstring` pointer.
 /// Useful for testing and possibly in other circumstances.
@@ -20,8 +23,8 @@ pub struct BStringStr<'a>(pub &'a str);
 
 impl<'a> BStringStr<'a> {
     #[allow(dead_code)]
-    pub fn into_raw(self) -> *mut BString {
-        let bs = BString{
+    pub fn into_raw(self) -> *mut RawBString {
+        let bs = RawBString{
             len: self.0.len() as u32,
             data: CString::new(self.0).unwrap().into_raw(),
         };
@@ -33,8 +36,8 @@ impl<'a> BStringStr<'a> {
     /// into_raw method. Passing this method a pointer created through other means
     /// may lead to undefined behavior.
     #[allow(dead_code)]
-    pub unsafe fn free(ptr: *mut BString) {
-        let b: Box<BString> = Box::from_raw(ptr);
+    pub unsafe fn free(ptr: *mut RawBString) {
+        let b: Box<RawBString> = Box::from_raw(ptr);
         // reclaim pointer from the bstring, allowing it to be freed
         drop(CString::from_raw(b.data));
         drop(b);
@@ -62,23 +65,27 @@ impl<'a> BStringStr<'a> {
 /// ```
 // see go/rust-newtype-pattern
 pub struct BStringRef<'a> {
-    inner: &'a BString,
+    inner: &'a RawBString,
 }
 
 impl<'a> BStringRef<'a> {
-    pub unsafe fn from_raw(ptr: *const BString) -> Self {
+    pub unsafe fn from_raw(ptr: *const RawBString) -> Self {
         assert!(!ptr.is_null());
         let inner = &*ptr;
         BStringRef{inner}
     }
 
     #[allow(dead_code)]
-    pub fn into_raw(self) -> *const BString {
-        self.inner as *const BString
+    pub fn into_raw(self) -> *const RawBString {
+        self.inner as *const RawBString
     }
 
     pub fn to_str(&self) -> Result<&str, Utf8Error> {
         str::from_utf8(&*self)
+    }
+
+    pub fn new(b: &'a RawBString) -> BStringRef<'a> {
+        BStringRef{inner: b}
     }
 }
 
@@ -124,17 +131,17 @@ impl<'a> Deref for BStringRef<'a> {
 /// ```
 #[derive(Debug)]
 pub struct BStringRefMut<'a> {
-    inner: &'a mut BString,
+    inner: &'a mut RawBString,
 }
 
 impl<'a> BStringRefMut<'a> {
-    pub unsafe fn from_raw(ptr: *mut BString) -> Self {
+    pub unsafe fn from_raw(ptr: *mut RawBString) -> Self {
         assert!(!ptr.is_null());
         BStringRefMut{inner: &mut *ptr}
     }
 
-    pub fn into_raw(self) -> *mut BString {
-        self.inner as *mut BString
+    pub fn into_raw(self) -> *mut RawBString {
+        self.inner as *mut RawBString
     }
 }
 
@@ -172,9 +179,84 @@ impl<'a> io::Write for BStringRefMut<'a> {
     }
 }
 
-impl<'a> AsMut<BString> for BStringRefMut<'a> {
-    fn as_mut(&mut self) -> &mut BString {
+impl<'a> AsMut<RawBString> for BStringRefMut<'a> {
+    fn as_mut(&mut self) -> &mut RawBString {
         self.inner
     }
+}
+
+
+/// An owned BString
+pub struct BString(RawBString);
+
+impl BString {
+    pub fn new(size: u32) -> Self {
+        BString::from(vec![0u8; size as usize].into_boxed_slice())
+    }
+
+    pub fn into_raw(self) -> *mut RawBString {
+        let mut uniq = self.0;
+        mem::forget(self);
+
+        (&mut uniq) as *mut RawBString
+    }
+
+    pub unsafe fn from_raw(ptr: *mut RawBString) -> BString {
+        assert!(!ptr.is_null());
+        BString(*ptr)
+    }
+
+    fn as_slice(&self) -> &[u8] {
+        unsafe {
+            slice::from_raw_parts(
+                self.0.data as *const _ as *const u8,
+                self.0.len as usize
+            )
+        }
+    }
+
+    fn as_slice_mut(&mut self) -> &mut [u8] {
+        unsafe {
+            slice::from_raw_parts_mut(
+                self.0.data as *mut _ as *mut u8,
+                self.0.len as usize
+            )
+        }
+    }
+}
+
+impl Deref for BString {
+    type Target = [u8];
+
+    fn deref(&self) -> &<Self as Deref>::Target {
+        self.as_slice()
+    }
+}
+
+impl DerefMut for BString {
+    fn deref_mut(&mut self) -> &mut <Self as Deref>::Target {
+        self.as_slice_mut()
+    }
+}
+
+impl From<Box<[u8]>> for BString {
+    fn from(b: Box<[u8]>) -> Self {
+        BString(
+            RawBString {
+                len: b.len() as u32,
+                data: Box::into_raw(b) as *mut _ as *mut c_char
+            }
+        )
+    }
+}
+
+impl From<Vec<u8>> for BString {
+    fn from(v: Vec<u8>) -> Self {
+        BString::from(v.into_boxed_slice())
+    }
+}
+
+impl AsRef<RawBString> for BString {
+    fn as_ref(&self) -> &RawBString { &self.0 }
 }
 

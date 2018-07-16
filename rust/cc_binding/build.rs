@@ -62,9 +62,8 @@ fn main() {
 
     let build_dir = out_path.parent().and_then(|p| p.parent()).unwrap();
 
-    let link_location = build_dir.join("cc_binding");
-
-    let _ = fs::remove_file(link_location.as_path());
-    unix_fs::symlink(symlink_content, link_location).unwrap();
+//    let link_location = build_dir.join("cc_binding");
+//    let _ = fs::remove_file(link_location.as_path());
+//    unix_fs::symlink(symlink_content, link_location).unwrap();
 }
 

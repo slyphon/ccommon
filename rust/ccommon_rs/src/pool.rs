@@ -1,18 +1,22 @@
 use super::Result;
+
+use bstring::BString;
 use cc_binding as bind;
+use failure;
 use std::collections::VecDeque;
 use std::ops::Deref;
-use std::os::raw::c_void;
 use std::ptr;
 use std::rc::Rc;
 use ptrs;
+
+use bstring::RawBString;
+use std::os::raw::c_char;
 
 struct BufMutator(Rc<Fn(&mut [u8])>);
 
 impl BufMutator {
     pub fn new<F>(f: F) -> BufMutator
-    where
-        F: Fn(&mut [u8]) + 'static,
+        where F: Fn(&mut [u8]) + 'static,
     {
         BufMutator(Rc::new(f))
     }
@@ -33,11 +37,23 @@ impl Clone for BufMutator {
 }
 
 /// This is the type bindgen makes the various callbacks
-struct CCallback(unsafe extern "C" fn(buf: *mut c_void));
+type CCallbackType = unsafe extern "C" fn(buf: *mut RawBString);
+
+struct CCallback(CCallbackType);
 
 impl From<CCallback> for BufMutator {
     fn from(cc: CCallback) -> Self {
-        BufMutator::new(move |buf: &mut [u8]| unsafe { (cc.0)(buf as *mut _ as *mut c_void) })
+        BufMutator::new(
+            move |buf: &mut [u8]| {
+                let mut bs = RawBString {
+                    len: buf.len() as u32,
+                    data: buf.as_mut_ptr() as *mut c_char
+                };
+                unsafe {
+                    (cc.0)(&mut bs as *mut RawBString)
+                }
+            }
+        )
     }
 }
 
@@ -177,16 +193,18 @@ impl PoolConfig {
 // off owned ranges of it. This implementation follows the existing one, using
 // a queue that points to non-contiguous blocks of memory. It's left as an
 // enhancement to do the contiguous block implementation.
-#[allow(non_camel_case_types)]
-pub struct pool_handle_rs {
-    freeq: VecDeque<Box<[u8]>>,
+pub struct Pool{
+    freeq: VecDeque<BString>,
     obj_size: usize,
     nused: usize,
     nmax: usize,
     callbacks: BufCallbacks,
 }
 
-type Pool = pool_handle_rs;
+#[allow(non_camel_case_types)]
+#[no_mangle]
+type pool_handle_rs = Pool;
+
 
 // |<----------- nmax ---------->|
 // | nused | freeq     |  slack  |
@@ -227,10 +245,10 @@ impl Pool {
         }
     }
 
-    fn allocate_one(&mut self) -> Box<[u8]> {
-        let mut bs = vec![0u8; self.obj_size].into_boxed_slice();
+    fn allocate_one(&mut self) -> BString {
+        let mut bs = BString::new(self.obj_size as u32);
         self.callbacks.init(&mut bs[..]);
-        bs
+        BString::from(bs)
     }
 
     /// Get an object from the pool. If `self.nused < self.nmax` and
@@ -238,7 +256,7 @@ impl Pool {
     /// return it. If `self.nused == self.nmax` then None is returned because
     /// the pool is at capacity.
     #[inline]
-    pub fn take(&mut self) -> Option<Box<[u8]>> {
+    pub fn take(&mut self) -> Option<BString> {
         let item = self.freeq.pop_front().or_else(|| {
             if self.nmax == 0 || self.nused < self.nmax {
                 Some(self.allocate_one())
@@ -254,7 +272,7 @@ impl Pool {
     }
 
     #[inline]
-    pub fn put(&mut self, mut item: Box<[u8]>) {
+    pub fn put(&mut self, mut item: BString) {
         self.callbacks.reset(&mut item[..]);
         self.freeq.push_back(item);
         self.nused -= 1;
@@ -282,6 +300,7 @@ impl Drop for Pool {
     }
 }
 
+#[no_mangle]
 pub unsafe extern "C" fn pool_create_handle_rs(
     cfg: *const bind::pool_config_rs,
 ) -> *mut pool_handle_rs {
@@ -296,6 +315,44 @@ pub unsafe extern "C" fn pool_create_handle_rs(
         })
 }
 
+#[no_mangle]
+pub unsafe extern "C" fn pool_take_rs(handle: *mut Pool) -> *mut RawBString {
+    ptrs::null_check_mut(handle)
+        .map_err(|e| e.into())
+        .map(|hptr| {
+            let pool = &mut *hptr;
+            match pool.take() {
+                Some(bstr) => bstr.into_raw(),
+                None => ptr::null_mut(),
+            }
+        })
+        .unwrap_or_else(|err: failure::Error| {
+            eprintln!("ERROR: pool_take_rs {:#?}", err);
+            ptr::null_mut() // null here because there was an error
+        })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn pool_put_rs(handle: *mut Pool, buf: *mut *mut RawBString) {
+    if handle.is_null() {
+        eprintln!("NULL handle passed to pool_put_rs");
+        return;
+    }
+
+    if buf.is_null() {
+        eprintln!("NULL buf passed to pool_put_rs");
+        return;
+    }
+
+    if (*buf).is_null() {
+        eprintln!("NULL *buf passed to pool_put_rs");
+        return;
+    }
+
+    (*handle).put(BString::from_raw(*buf));
+
+    *buf = ptr::null_mut();
+}
 
 #[cfg(test)]
 mod test {

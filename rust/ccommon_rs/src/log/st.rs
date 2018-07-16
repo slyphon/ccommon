@@ -28,7 +28,6 @@
 
 #![allow(dead_code)]
 
-use bstring::BString;
 use bstring::BStringRef;
 use cc_binding as bind;
 use rslog;
@@ -224,7 +223,7 @@ pub unsafe extern "C" fn log_st_is_setup_rs() -> bool {
 ///
 /// This function panics if the `msg` pointer is NULL.
 #[no_mangle]
-pub unsafe extern "C" fn log_st_log_rs(msg: *const BString, level: Level) -> LoggerStatus {
+pub unsafe extern "C" fn log_st_log_rs(msg: *const bind::bstring, level: Level) -> LoggerStatus {
     assert!(!msg.is_null());
     let bsr = BStringRef::from_raw(msg);
 

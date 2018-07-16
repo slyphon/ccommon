@@ -94,8 +94,6 @@ bstring_copy(struct bstring *dst, const char *src, uint32_t srclen)
     }
 
     cc_memcpy(dst->data, src, srclen);
-    dst->len = srclen;
-
     return CC_OK;
 }
 
