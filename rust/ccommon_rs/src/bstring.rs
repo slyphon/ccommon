@@ -24,7 +24,6 @@
 
 use cc_binding as bind;
 use std::borrow::Borrow;
-use std::boxed::Box;
 use std::cell::UnsafeCell;
 use std::fmt;
 use std::fmt::Debug;
@@ -96,14 +95,14 @@ impl BStr {
 
     // it's ok to ignore the cast_ptr_alignment lint because we're going
     // *mut CCbstring -> &BStr -> *mut CCbstring
-    #[allow(cast_ptr_alignment)]
     #[allow(unknown_lints)]
+    #[allow(cast_ptr_alignment)]
     #[inline]
     pub fn as_ptr(&self) -> *mut CCbstring {
         (&*self) as *const _ as *mut _
     }
 
-    pub fn from_ref<'a>(ccb: &'a CCbstring) -> &'a Self {
+    pub fn from_ref(ccb: &CCbstring) -> &Self {
         unsafe { Self::from_ptr(ccb as *const CCbstring as *mut _) }
     }
 
@@ -129,7 +128,7 @@ impl Deref for BStr {
 impl DerefMut for BStr {
     #[inline]
     fn deref_mut(&mut self) -> &mut [u8] {
-        unsafe { raw_ptr_to_bytes_mut(self.as_ptr()) as *mut _ }
+        unsafe { raw_ptr_to_bytes_mut(self.as_ptr() as *mut _)  }
     }
 }
 

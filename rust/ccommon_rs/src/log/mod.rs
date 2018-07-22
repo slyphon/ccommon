@@ -625,7 +625,10 @@ pub unsafe extern "C" fn log_shutdown_rs(ph: *mut Handle, timeout_ms: u32) -> Lo
             None => return LoggerStatus::NullPointerError,
         };
 
-    Handle::shutdown(&mut handle, time::Duration::milliseconds(timeout_ms as i64));
+    Handle::shutdown(
+        &mut handle,
+        time::Duration::milliseconds(i64::from(timeout_ms))
+    );
 
     LoggerStatus::OK
 }
